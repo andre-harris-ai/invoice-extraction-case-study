@@ -1,0 +1,12 @@
+groq
+streamlit
+python-dotenv
+flask
+flask-cors
+pdf2image
+pypdf
+pillow
+requests
+pydantic
+pandas
+openpyxl
