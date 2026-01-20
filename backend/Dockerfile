@@ -1,6 +1,11 @@
 # Use the official lightweight image
 FROM python:3.10-slim
 
+# Install system dependencies required for PDF processing
+RUN apt-get update && apt-get install -y \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set the working directory
 WORKDIR /app
 
@@ -11,11 +16,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application code
 COPY . /app
 
-# Copy the environment file into the container
-COPY .env /app/.env
+# Create Results directory if it doesn't exist
+RUN mkdir -p /app/Results
 
-# Expose the port Streamlit runs on
-EXPOSE 8501
+# Expose the port Flask API runs on
+EXPOSE 5000
 
-# Run the Streamlit app
-CMD ["streamlit", "run", "app.py"]
+# Set environment variables
+ENV FLASK_APP=api_server.py
+ENV FLASK_ENV=production
+
+# Run the Flask API server
+CMD ["python", "api_server.py"]
