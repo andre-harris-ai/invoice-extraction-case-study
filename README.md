@@ -511,6 +511,340 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Flask](https://flask.palletsprojects.com/) for the lightweight Python web framework
 - [TailwindCSS](https://tailwindcss.com/) for the utility-first CSS framework
 
+## 📈 Scaling Strategies
+
+This section discusses how the solution would evolve to handle higher volume, additional document types, and production-scale deployment.
+
+### 1. Backend Architecture Scaling
+
+#### Current Limitations
+- Single Flask server handling all requests synchronously
+- Excel database not suitable for concurrent writes
+- No queue system for async processing
+- No horizontal scaling capability
+
+#### Proposed Solutions
+
+**A. Asynchronous Task Queue**
+- **Technology**: Redis + Celery or RabbitMQ
+- **Implementation**: 
+  - Move invoice extraction to background tasks
+  - Return job IDs immediately to frontend
+  - Frontend polls for completion status
+  - Support for batch processing multiple invoices
+- **Benefits**: 
+  - Non-blocking API responses
+  - Better resource utilization
+  - Ability to retry failed tasks
+  - Priority queue for urgent documents
+
+**B. Horizontal Scaling**
+- **Load Balancer**: Nginx or AWS Application Load Balancer
+- **Multiple Flask Instances**: Deploy multiple backend instances behind load balancer
+- **Container Orchestration**: Docker + Kubernetes or Docker Swarm
+- **Auto-scaling**: Scale instances based on queue depth and CPU/memory metrics
+
+**C. API Gateway & Rate Limiting**
+- **Technology**: Kong, AWS API Gateway, or Nginx
+- **Features**:
+  - Rate limiting per user/API key
+  - Request throttling
+  - API versioning
+  - Authentication/authorization middleware
+
+### 2. Database Migration & Scaling
+
+#### Current Limitations
+- Excel file cannot handle concurrent writes
+- No transaction support
+- Limited query capabilities
+- Not suitable for production workloads
+
+#### Proposed Solutions
+
+**A. Relational Database (PostgreSQL/MySQL)**
+- **Migration Path**:
+  1. Create equivalent schema in PostgreSQL
+  2. Implement dual-write pattern (write to both Excel and PostgreSQL)
+  3. Gradually migrate reads to PostgreSQL
+  4. Deprecate Excel after full migration
+- **Schema Design**:
+  ```sql
+  -- SalesOrderHeader table
+  CREATE TABLE sales_order_header (
+    order_id SERIAL PRIMARY KEY,
+    invoice_number VARCHAR(100),
+    invoice_date DATE,
+    due_date DATE,
+    customer_name VARCHAR(255),
+    vendor_name VARCHAR(255),
+    billing_address TEXT,
+    shipping_address TEXT,
+    subtotal DECIMAL(10,2),
+    tax DECIMAL(10,2),
+    total_amount DECIMAL(10,2),
+    currency VARCHAR(10),
+    status VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    INDEX idx_invoice_number (invoice_number),
+    INDEX idx_customer_name (customer_name),
+    INDEX idx_created_at (created_at)
+  );
+  
+  -- SalesOrderDetail table
+  CREATE TABLE sales_order_detail (
+    id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES sales_order_header(order_id),
+    line_number INTEGER,
+    item_description TEXT,
+    quantity DECIMAL(10,2),
+    unit_price DECIMAL(10,2),
+    line_total DECIMAL(10,2),
+    created_at TIMESTAMP DEFAULT NOW()
+  );
+  ```
+
+**B. Caching Layer**
+- **Technology**: Redis
+- **Use Cases**:
+  - Cache frequently accessed invoices
+  - Store extraction results temporarily
+  - Session management
+  - Rate limiting counters
+- **Cache Strategy**: 
+  - TTL-based expiration (e.g., 1 hour for invoice data)
+  - Cache-aside pattern
+  - Invalidate on updates
+
+**C. Read Replicas**
+- For high-read workloads, implement PostgreSQL read replicas
+- Route read queries to replicas, writes to primary
+- Use connection pooling (PgBouncer)
+
+### 3. Document Processing Optimization
+
+#### A. Batch Processing
+- **Implementation**: Process multiple documents in parallel
+- **Technology**: Celery workers with concurrency
+- **Workflow**:
+  1. User uploads multiple files
+  2. Create batch job
+  3. Process files in parallel (configurable concurrency)
+  4. Return batch results with individual statuses
+
+#### B. Document Type Expansion
+- **Current**: PDF, PNG, JPG, JPEG
+- **Additional Types**:
+  - **Office Documents**: DOCX, XLSX (using `python-docx`, `openpyxl`)
+  - **Email Attachments**: Extract from .eml files
+  - **Scanned Documents**: Enhanced OCR preprocessing
+  - **Multi-page Documents**: Automatic page detection and merging
+- **Architecture**:
+  ```python
+  class DocumentProcessor:
+      def process(self, file, file_type):
+          processors = {
+              'pdf': PDFProcessor(),
+              'image': ImageProcessor(),
+              'docx': DOCXProcessor(),
+              'xlsx': XLSXProcessor(),
+              'eml': EmailProcessor()
+          }
+          return processors[file_type].extract(file)
+  ```
+
+#### C. Preprocessing Pipeline
+- **Image Enhancement**: 
+  - Auto-rotation correction
+  - Noise reduction
+  - Contrast adjustment
+  - Deskewing
+- **Technology**: OpenCV, PIL/Pillow
+- **Benefits**: Improved OCR accuracy, especially for scanned documents
+
+### 4. AI/ML Model Optimization
+
+#### A. Model Selection & Fine-tuning
+- **Current**: Single LLaMA 4 Scout model
+- **Proposed**:
+  - **Model Routing**: Route documents to specialized models based on:
+    - Document language (detected via language detection)
+    - Document complexity
+    - Document type (invoice, receipt, purchase order)
+  - **Fine-tuning**: Fine-tune models on domain-specific invoice data
+  - **Ensemble Methods**: Combine multiple model outputs for better accuracy
+
+#### B. Prompt Engineering & Templates
+- **Template System**: 
+  - Language-specific prompts
+  - Industry-specific prompts (retail, healthcare, construction)
+  - Document-type-specific prompts
+- **A/B Testing**: Test different prompts and measure accuracy
+- **Version Control**: Track prompt versions and their performance
+
+#### C. Post-processing & Validation
+- **Rule-based Validation**: 
+  - Check date formats
+  - Validate currency codes
+  - Verify mathematical calculations (line totals, tax, grand total)
+  - Cross-field validation (e.g., due date after invoice date)
+- **Confidence Scores**: Return confidence scores for each extracted field
+- **Human-in-the-Loop**: Flag low-confidence extractions for manual review
+
+### 5. Performance Optimization
+
+#### A. Image Processing Optimization
+- **Lazy Loading**: Process images on-demand
+- **Image Compression**: 
+  - Compress before sending to Groq API
+  - Maintain quality while reducing size
+  - Adaptive quality based on document complexity
+- **CDN**: Serve processed images via CDN (CloudFront, Cloudflare)
+
+#### B. API Response Optimization
+- **Streaming Responses**: Stream large responses
+- **Pagination**: Implement pagination for invoice lists
+- **Field Selection**: Allow clients to request specific fields only
+- **Compression**: Enable gzip/brotli compression
+
+#### C. Database Query Optimization
+- **Indexing**: Strategic indexes on frequently queried columns
+- **Query Optimization**: Analyze slow queries, use EXPLAIN
+- **Connection Pooling**: Use SQLAlchemy connection pooling
+- **Materialized Views**: For complex aggregations
+
+### 6. Monitoring & Observability
+
+#### A. Application Monitoring
+- **APM Tools**: 
+  - New Relic, Datadog, or Prometheus + Grafana
+  - Track request latency, error rates, throughput
+- **Logging**: 
+  - Structured logging (JSON format)
+  - Centralized logging (ELK stack, CloudWatch)
+  - Log levels and correlation IDs
+- **Tracing**: Distributed tracing (Jaeger, Zipkin) for request flow
+
+#### B. Business Metrics
+- **KPIs**:
+  - Documents processed per hour/day
+  - Extraction accuracy rate
+  - Average processing time
+  - Error rate by document type
+  - API usage by customer
+- **Dashboards**: Real-time dashboards for business stakeholders
+
+#### C. Alerting
+- **Error Alerts**: Alert on high error rates
+- **Performance Alerts**: Alert on slow response times
+- **Capacity Alerts**: Alert on queue depth, database connections
+
+### 7. Security & Compliance
+
+#### A. Authentication & Authorization
+- **JWT Tokens**: Implement JWT-based authentication
+- **Role-Based Access Control (RBAC)**: Different permissions for different users
+- **API Keys**: Support API key authentication for programmatic access
+
+#### B. Data Security
+- **Encryption**: 
+  - Encrypt data at rest (database encryption)
+  - Encrypt data in transit (TLS/SSL)
+- **PII Handling**: 
+  - Mask sensitive data in logs
+  - Support data deletion (GDPR compliance)
+  - Audit trails for data access
+
+#### C. Compliance
+- **GDPR**: Right to deletion, data portability
+- **SOC 2**: Security controls and audits
+- **HIPAA** (if handling healthcare invoices): Additional security measures
+
+### 8. Deployment & DevOps
+
+#### A. Containerization
+- **Docker**: 
+  - Multi-stage builds for smaller images
+  - Separate containers for frontend, backend, workers
+- **Docker Compose**: For local development
+- **Kubernetes**: For production orchestration
+
+#### B. CI/CD Pipeline
+- **GitHub Actions / GitLab CI**:
+  - Automated testing (unit, integration, E2E)
+  - Code quality checks (linting, type checking)
+  - Security scanning
+  - Automated deployments (staging, production)
+- **Blue-Green Deployment**: Zero-downtime deployments
+
+#### C. Infrastructure as Code
+- **Terraform / CloudFormation**: Define infrastructure in code
+- **Ansible**: Configuration management
+- **Benefits**: Reproducible, version-controlled infrastructure
+
+### 9. Cost Optimization
+
+#### A. API Cost Management
+- **Caching**: Cache extraction results to avoid redundant API calls
+- **Batch Optimization**: Group similar documents for batch processing
+- **Model Selection**: Use cheaper models for simple documents
+- **Rate Limiting**: Prevent unnecessary API calls
+
+#### B. Infrastructure Costs
+- **Auto-scaling**: Scale down during low-traffic periods
+- **Reserved Instances**: For predictable workloads
+- **Spot Instances**: For non-critical batch processing
+- **CDN**: Reduce bandwidth costs
+
+### 10. User Experience Enhancements
+
+#### A. Real-time Updates
+- **WebSockets**: Real-time progress updates instead of polling
+- **Server-Sent Events (SSE)**: Alternative to WebSockets for one-way updates
+
+#### B. Advanced Features
+- **Document Comparison**: Compare multiple invoices
+- **Export Options**: Export to CSV, JSON, XML
+- **Bulk Operations**: Bulk edit, bulk delete
+- **Search & Filter**: Advanced search with filters
+- **Analytics**: Invoice analytics dashboard
+
+### Implementation Roadmap
+
+**Phase 1 (Weeks 1-2): Foundation**
+- Migrate to PostgreSQL
+- Implement Redis caching
+- Set up basic monitoring
+
+**Phase 2 (Weeks 3-4): Async Processing**
+- Implement Celery task queue
+- Background job processing
+- Job status API
+
+**Phase 3 (Weeks 5-6): Scaling**
+- Horizontal scaling setup
+- Load balancer configuration
+- Auto-scaling policies
+
+**Phase 4 (Weeks 7-8): Advanced Features**
+- Additional document types
+- Enhanced preprocessing
+- Model optimization
+
+**Phase 5 (Ongoing): Optimization**
+- Performance tuning
+- Cost optimization
+- Continuous monitoring and improvement
+
+### Expected Improvements
+
+- **Throughput**: From ~10 documents/minute to 1000+ documents/minute
+- **Latency**: From 5-10 seconds to <2 seconds (with caching)
+- **Availability**: From single point of failure to 99.9% uptime
+- **Scalability**: From single server to auto-scaling cluster
+- **Cost Efficiency**: 50-70% reduction in API costs through caching and optimization
+
 ## 📧 Support
 
 For issues, questions, or contributions, please open an issue on the [GitHub repository](https://github.com/andre-harris-ai/invoice-extraction-case-study).
